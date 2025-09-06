@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { ChevronRight, Gift, Star, Users, Play, CheckCircle, Clock } from 'lucide-react';
+import { ChevronRight, Gift, Star, Users } from 'lucide-react';
 import { Task, UserData } from '../types';
-import AdModal from './AdModal';
 
 interface HomePageProps {
   userData: UserData;
@@ -20,25 +19,10 @@ const HomePage: React.FC<HomePageProps> = ({
   canPlayLuckyDraw,
   setCurrentPage
 }) => {
-  const [showAdModal, setShowAdModal] = useState(false);
-  const [currentAdTask, setCurrentAdTask] = useState<Task | null>(null);
   const [luckyDrawResult, setLuckyDrawResult] = useState<number | null>(null);
 
   const followTasks = tasks.filter(task => task.type === 'follow' && !task.completed);
-  const availableAds = tasks.filter(task => task.type === 'ad' && !task.completed);
-
-  const handleAdStart = (task: Task) => {
-    setCurrentAdTask(task);
-    setShowAdModal(true);
-  };
-
-  const handleAdComplete = () => {
-    if (currentAdTask) {
-      completeTask(currentAdTask.id);
-      setShowAdModal(false);
-      setCurrentAdTask(null);
-    }
-  };
+  // NOTE: Watch Ads section di-REMOVE dari Home (tidak ditampilkan di sini)
 
   const handleLuckyDraw = () => {
     const reward = performLuckyDraw();
@@ -118,45 +102,8 @@ const HomePage: React.FC<HomePageProps> = ({
           </div>
         </div>
 
-        {/* Watch Ads Section */}
-        {availableAds.length > 0 && (
-          <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-8 h-8 bg-green-600 rounded-lg flex items-center justify-center">
-                <Play className="w-4 h-4" />
-              </div>
-              <h3 className="font-medium">Watch Ads</h3>
-              <span className="bg-green-600 text-xs px-2 py-1 rounded-full">
-                {availableAds.length} Available
-              </span>
-            </div>
-            
-            <div className="space-y-2">
-              {availableAds.slice(0, 2).map(task => (
-                <div key={task.id} className="flex items-center justify-between py-2">
-                  <div className="flex items-center gap-3">
-                    <div className="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center">
-                      <Play className="w-3 h-3" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium">{task.title}</div>
-                      <div className="text-xs text-gray-400 flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {task.duration}s • $0.003 reward
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleAdStart(task)}
-                    className="bg-green-600 hover:bg-green-700 px-3 py-1 rounded-lg text-xs font-medium transition-colors"
-                  >
-                    Watch
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Watch Ads Section — DIHILANGKAN dari Home */}
+        {/* (semua Task Ads sekarang hanya di halaman Tasks, bukan di Home) */}
       </div>
 
       {/* Invite Friends Section */}
@@ -195,15 +142,6 @@ const HomePage: React.FC<HomePageProps> = ({
             </div>
           </div>
         </div>
-      )}
-
-      {/* Ad Modal */}
-      {showAdModal && currentAdTask && (
-        <AdModal
-          task={currentAdTask}
-          onComplete={handleAdComplete}
-          onClose={() => setShowAdModal(false)}
-        />
       )}
     </div>
   );
