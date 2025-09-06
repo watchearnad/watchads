@@ -40,8 +40,9 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
       </div>
 
       {/* Task List */}
-      {/* Task: Tonton Iklan (Monetag) */}
-<TaskAds />
+     import TaskAdsList from "./TaskAdsList";
+// …di dalam JSX TaskPage, pada section "Available Tasks":
+<TaskAdsList />
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Available Tasks</h2>
