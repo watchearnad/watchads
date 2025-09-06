@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Play, CheckCircle, Clock, DollarSign, Target, TrendingUp } from 'lucide-react';
 import { Task, UserData } from '../types';
 import AdModal from './AdModal';
+import TaskAds from "./TaskAds";
 
 interface TaskPageProps {
   tasks: Task[];
@@ -39,6 +40,8 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
       </div>
 
       {/* Task List */}
+      {/* Task: Tonton Iklan (Monetag) */}
+<TaskAds />
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Available Tasks</h2>
@@ -154,5 +157,4 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
     </div>
   );
 };
-
 export default TaskPage;
