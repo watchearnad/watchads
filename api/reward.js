@@ -1,6 +1,7 @@
+// api/reward.js
 const getPool = require("./_db");
 
-// baca body POST aman (kadang req.body kosong)
+// baca body POST aman (kalau req.body kosong)
 function readBody(req) {
   return new Promise((resolve) => {
     let data = "";
@@ -11,8 +12,9 @@ function readBody(req) {
     });
   });
 }
+
 const parseAmount = (v) => {
-  const s = String(v ?? 1).replace(",", "."); // dukung 1,25
+  const s = String(v ?? 1).replace(",", "."); // dukung "1,25"
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : 1;
 };
@@ -22,16 +24,16 @@ module.exports = async (req, res) => {
   const userId = Number(payload.userId);
   const amount = parseAmount(payload.amount);
 
-  if (!Number.isFinite(userId) || userId <= 0)
+  if (!Number.isFinite(userId) || userId <= 0) {
     return res.status(400).json({ error: "userId missing/invalid" });
+  }
 
   const db = getPool();
 
   // upsert + tambah ke kolom numeric
   await db.query(
     `INSERT INTO users (id, balance) VALUES ($1, $2::numeric)
-     ON CONFLICT (id)
-     DO UPDATE SET balance = users.balance + EXCLUDED.balance`,
+     ON CONFLICT (id) DO UPDATE SET balance = users.balance + EXCLUDED.balance`,
     [userId, amount]
   );
 
