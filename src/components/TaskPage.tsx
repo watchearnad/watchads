@@ -31,9 +31,8 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
     }
   };
 
-  // ====== LOGIC IKLAN 16s + KLAIM (disuntik tanpa ubah UI) ======
+  // ====== LOGIC IKLAN 16s + AUTO-CLAIM (tanpa ubah layout/list) ======
   type Ad = { id:number; title:string|null; media_url:string; reward:number; duration_sec:number };
-
   const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '';
 
   // user id dari Telegram; fallback 123 untuk test lokal
@@ -44,24 +43,32 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
     if (typeof uid === 'number' && Number.isFinite(uid)) setUserId(uid);
   }, []);
 
-  // ambil daftar iklan aktif (untuk isi title/reward/durasi dan link Monetag)
+  // ambil daftar iklan aktif (media_url, reward, durasi)
   const [ads, setAds] = useState<Ad[]>([]);
   useEffect(() => {
     let mounted = true;
     fetch(`${API_BASE}/api/ads`)
-      .then(r => r.ok ? r.json() : [])
+      .then(r => (r.ok ? r.json() : []))
       .then((a: Ad[]) => { if (mounted) setAds(Array.isArray(a) ? a : []); })
       .catch(() => setAds([]));
     return () => { mounted = false; };
   }, []);
 
-  // state per-kartu (pakai 5 slot sesuai UI kamu)
-  const SLOTS = 5;
-  const [cooldowns, setCooldowns] = useState<number[]>(Array(SLOTS).fill(0));
-  const [watchedId, setWatchedId] = useState<(number|null)[]>(Array(SLOTS).fill(null));
-  const claiming = useRef<boolean[]>(Array(SLOTS).fill(false));
+  // siapkan slot sesuai jumlah kartu (minimal 5 agar stabil)
+  const [cooldowns, setCooldowns] = useState<number[]>([]);
+  const [watchedId, setWatchedId] = useState<(number|null)[]>([]);
+  const claiming = useRef<boolean[]>([]);
+  const pendingClaim = useRef<boolean[]>([]); // auto-claim sekali saat countdown selesai
 
-  // timer countdown
+  useEffect(() => {
+    const len = Math.max(availableAdTasks.length, 5);
+    setCooldowns(prev => Array.from({ length: len }, (_, i) => prev[i] ?? 0));
+    setWatchedId(prev => Array.from({ length: len }, (_, i) => prev[i] ?? null));
+    claiming.current   = Array.from({ length: len }, (_, i) => claiming.current[i]   ?? false);
+    pendingClaim.current = Array.from({ length: len }, (_, i) => pendingClaim.current[i] ?? false);
+  }, [availableAdTasks.length]);
+
+  // timer detik
   useEffect(() => {
     const t = setInterval(() => {
       setCooldowns(cs => cs.map(s => (s > 0 ? s - 1 : 0)));
@@ -69,54 +76,58 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
     return () => clearInterval(t);
   }, []);
 
-  // util: pilih iklan untuk slot i (kalau ads < 5, diputar)
-  const adOf = (i:number) => (ads.length ? ads[i % ads.length] : null);
+  // pilih iklan untuk slot i (kalau ads < jumlah slot, diputar)
+  const adOf = (i: number) => (ads.length ? ads[i % ads.length] : null);
 
-  // tombol "Watch Ad" di kartu ke-i
-  function handleWatchSlot(i:number){
+  // klik "Watch Ad" pada kartu ke-i
+  function handleWatchSlot(i: number) {
     const ad = adOf(i);
     if (!ad) { alert('Tidak ada iklan aktif'); return; }
 
-    setWatchedId(prev => { const copy=[...prev]; copy[i] = ad.id; return copy; });
-    setCooldowns(prev => { const copy=[...prev]; copy[i] = ad.duration_sec || 16; return copy; });
+    // start countdown + tandai akan auto-claim
+    const fallbackDur = availableAdTasks[i]?.duration ?? 16;
+    setWatchedId(prev => { const copy = [...prev]; copy[i] = ad.id; return copy; });
+    setCooldowns(prev => { const copy = [...prev]; copy[i] = ad.duration_sec || fallbackDur; return copy; });
+    pendingClaim.current[i] = true;
 
+    // buka link
     const tg = typeof window !== 'undefined' ? (window as any)?.Telegram?.WebApp : null;
     if (tg?.openLink) tg.openLink(ad.media_url, { try_instant_view: false });
     else window.open(ad.media_url, '_blank', 'noopener');
   }
 
-  // tombol "Klaim" di kartu ke-i
-  async function handleClaimSlot(i:number){
+  // auto-claim saat cooldown slot jadi 0
+  useEffect(() => {
+    cooldowns.forEach((c, i) => {
+      if (c === 0 && pendingClaim.current[i]) autoClaimSlot(i);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cooldowns]);
+
+  async function autoClaimSlot(i: number) {
     const ad = adOf(i);
     if (!ad) return;
-    if (cooldowns[i] > 0) return;            // belum 16s
-    if (watchedId[i] !== ad.id) return;      // harus nonton iklan slot ini dulu
+    if (watchedId[i] !== ad.id) return;
     if (claiming.current[i]) return;
 
     claiming.current[i] = true;
-    try{
-      const res = await fetch(`${API_BASE}/api/reward`, {
+    pendingClaim.current[i] = false;
+
+    const amount = Number.isFinite(ad.reward) ? ad.reward : (availableAdTasks[i]?.reward ?? 0.003);
+
+    try {
+      await fetch(`${API_BASE}/api/reward`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, amount: ad.reward })
-      });
-      const data = await res.json().catch(() => ({} as any));
-      if (typeof data.cooldown === 'number') {
-        setCooldowns(prev => { const c=[...prev]; c[i]=data.cooldown; return c; });
-      } else {
-        // sukses klaim → reset slot (boleh nonton lagi)
-        setWatchedId(prev => { const w=[...prev]; w[i]=null; return w; });
-      }
+        body: JSON.stringify({ userId, amount })
+      }).then(r => r.json()).catch(() => ({}));
+      // reset slot agar bisa nonton lagi
+      setWatchedId(prev => { const w = [...prev]; w[i] = null; return w; });
     } finally {
       claiming.current[i] = false;
     }
   }
-
-  const canClaim = (i:number) => {
-    const ad = adOf(i);
-    return !!ad && watchedId[i] === ad.id && cooldowns[i] <= 0 && !claiming.current[i];
-  };
-  // ====== END LOGIC IKLAN ======
+  // ====== END LOGIC ======
 
   return (
     <div className="p-4 space-y-6">
@@ -126,7 +137,7 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
         <p className="text-gray-400">Watch ads to earn $0.003 each</p>
       </div>
 
-      {/* Task List (tetap layout kamu) */}
+      {/* Task List (layout kamu tetap) */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Available Tasks</h2>
@@ -139,6 +150,11 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
           const ad = adOf(idx);
           const duration = ad?.duration_sec ?? task.duration ?? 16;
           const reward = Number(ad?.reward ?? task.reward ?? 0.003);
+
+          const label =
+            claiming.current[idx]
+              ? 'Processing…'
+              : (cooldowns[idx] > 0 ? `Tunggu ${cooldowns[idx]}s` : 'Watch Ad');
 
           return (
             <div key={task.id} className="bg-slate-800 rounded-xl p-4 border border-slate-700">
@@ -164,25 +180,14 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
                   </div>
                 </div>
 
-                <div className="flex gap-2">
-                  {/* Watch Ad = buka link + mulai timer slot */}
-                  <button
-                    onClick={() => handleWatchSlot(idx)}
-                    className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg font-medium transition-colors"
-                  >
-                    Watch Ad
-                  </button>
-
-                  {/* Klaim = tambah saldo setelah 16s */}
-                  <button
-                    onClick={() => handleClaimSlot(idx)}
-                    disabled={!canClaim(idx)}
-                    className="bg-sky-600 hover:bg-sky-700 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50"
-                    title={canClaim(idx) ? "Klaim" : (cooldowns[idx] > 0 ? `Tunggu ${cooldowns[idx]}s` : "Tonton dulu")}
-                  >
-                    {canClaim(idx) ? "Klaim" : (cooldowns[idx] > 0 ? `Tunggu ${cooldowns[idx]}s` : "Klaim")}
-                  </button>
-                </div>
+                {/* Satu tombol saja: Watch → countdown → auto-claim */}
+                <button
+                  onClick={() => handleWatchSlot(idx)}
+                  disabled={cooldowns[idx] > 0 || claiming.current[idx]}
+                  className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50"
+                >
+                  {label}
+                </button>
               </div>
             </div>
           );
@@ -219,7 +224,9 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
               <DollarSign className="w-5 h-5 text-green-400" />
               <span className="text-sm font-medium">Available Balance</span>
             </div>
-            <div className="text-2xl font-bold text-green-400">${userData.balance.toFixed(6)}</div>
+            <div className="text-2xl font-bold text-green-400">
+              ${userData.balance.toFixed(6)}
+            </div>
             <div className="text-xs text-gray-400">ready to withdraw</div>
           </div>
         </div>
@@ -232,28 +239,16 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
           <div className="w-full bg-gray-600 rounded-full h-2 mb-2">
             <div 
               className="bg-blue-500 h-2 rounded-full transition-all"
-              style={{ width: `${(completedAdTasks / Math.max(adTasks.length,1)) * 100}%` }}
+              style={{ width: `${(completedAdTasks / Math.max(adTasks.length, 1)) * 100}%` }}
             />
           </div>
           <div className="text-xs text-gray-400">
-            {Math.round((completedAdTasks / Math.max(adTasks.length,1)) * 100)}% complete
-          </div>
-        </div>
-
-        <div className="mt-4 bg-slate-700 rounded-lg p-4">
-          <div className="text-sm font-medium mb-2">Estimated Earnings</div>
-          <div className="flex justify-between items-center">
-            <span className="text-gray-400">From ads:</span>
-            <span className="font-medium">${(completedAdTasks * 0.003).toFixed(6)}</span>
-          </div>
-          <div className="flex justify-between items-center mt-1">
-            <span className="text-gray-400">Potential remaining:</span>
-            <span className="font-medium">${(availableAdTasks.length * 0.003).toFixed(6)}</span>
+            {Math.round((completedAdTasks / Math.max(adTasks.length, 1)) * 100)}% complete
           </div>
         </div>
       </div>
 
-      {/* Ad Modal (tetap, kalau masih dipakai di tempat lain) */}
+      {/* Ad Modal (tetap, kalau dipakai di tempat lain) */}
       {showAdModal && currentAdTask && (
         <AdModal
           task={currentAdTask}
