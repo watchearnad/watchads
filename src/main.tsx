@@ -1,10 +1,6 @@
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import App from './App.tsx';
-import './index.css';
+import ReactDOM from "react-dom/client";
+import App from "./App.tsx";
+import "./index.css"; // biarin kalau kamu pakai Tailwind/CSS
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>
-);
+const rootEl = document.getElementById("root")!;
+ReactDOM.createRoot(rootEl).render(<App />);
