@@ -1,145 +1,108 @@
-import React, { useState, useEffect } from 'react';
-import { X, Play, CheckCircle, Clock } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { X, Clock } from 'lucide-react';
 import { Task } from '../types';
 
-interface AdModalProps {
+interface Props {
   task: Task;
   onComplete: () => void;
   onClose: () => void;
 }
 
-const AdModal: React.FC<AdModalProps> = ({ task, onComplete, onClose }) => {
-  const [isWatching, setIsWatching] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(task.duration || 16);
-  const [isCompleted, setIsCompleted] = useState(false);
+export default function AdModal({ task, onComplete, onClose }: Props) {
+  const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '';
+  const [seconds, setSeconds] = useState<number>(task.duration ?? 16);
+  const [status, setStatus] = useState<'playing' | 'claiming' | 'done' | 'error'>('playing');
+  const [userId, setUserId] = useState<number>(123);
 
+  // ambil user id telegram
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    
-    if (isWatching && timeLeft > 0) {
-      interval = setInterval(() => {
-        setTimeLeft(prev => {
-          if (prev <= 1) {
-            setIsCompleted(true);
-            setIsWatching(false);
-            return 0;
-          }
-          return prev - 1;
+    const tg = (window as any)?.Telegram?.WebApp;
+    const uid = tg?.initDataUnsafe?.user?.id;
+    if (typeof uid === 'number' && Number.isFinite(uid)) setUserId(uid);
+  }, []);
+
+  // tampilkan iklan monetag & mulai hitung mundur
+  useEffect(() => {
+    const show =
+      (window as any).show_9834777 ||
+      (window as any).showRewarded ||
+      (window as any).playRewardedAd ||
+      (() => Promise.resolve());
+    try { show().catch(() => {}); } catch {}
+    const t = setInterval(() => setSeconds(s => (s > 0 ? s - 1 : 0)), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // selesai 16s -> klaim
+  useEffect(() => {
+    if (seconds === 0 && status === 'playing') {
+      setStatus('claiming');
+      claim();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seconds, status]);
+
+  async function claim() {
+    let tries = 0;
+    while (tries < 6) {
+      try {
+        const res = await fetch(`${API_BASE}/api/reward`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, amount: task.reward ?? 0.003 }),
         });
-      }, 1000);
-    }
+        const data: any = await res.json().catch(() => ({}));
 
-    return () => {
-      if (interval) {
-        clearInterval(interval);
+        // kalau masih cooldown → tunggu sisa detik, lanjut play lagi (tanpa alert)
+        if (res.status === 429 && typeof data.secondsLeft === 'number') {
+          const left = Math.max(1, Math.ceil(data.secondsLeft));
+          setSeconds(left);
+          setStatus('playing'); // biar timer jalan lagi; nanti auto-claim lagi saat 0
+          return;
+        }
+
+        // sukses
+        if (res.ok && !data?.error) {
+          setStatus('done');
+          onComplete();
+          return;
+        }
+
+        // error lain → retry beberapa kali
+        tries++;
+        await new Promise(r => setTimeout(r, 1200));
+      } catch {
+        tries++;
+        await new Promise(r => setTimeout(r, 1200));
       }
-    };
-  }, [isWatching, timeLeft]);
-
-  const startAd = () => {
-    setIsWatching(true);
-  };
-
-  const handleComplete = () => {
-    onComplete();
-  };
-
-  const handleClose = () => {
-    if (!isWatching) {
-      onClose();
     }
-  };
+    setStatus('error'); // tampilkan status, TANPA alert
+  }
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4">
-      <div className="bg-slate-800 rounded-xl max-w-md w-full border border-slate-600">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-700">
-          <h3 className="text-lg font-semibold">Advertisement</h3>
-          {!isWatching && (
-            <button
-              onClick={handleClose}
-              className="text-gray-400 hover:text-white transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          )}
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-slate-800 rounded-2xl border border-slate-700 p-4 relative">
+        <button onClick={onClose} className="absolute right-3 top-3 text-gray-400 hover:text-white">
+          <X />
+        </button>
+
+        <div className="aspect-video w-full bg-black/40 rounded-lg mb-4 overflow-hidden flex items-center justify-center">
+          <span className="text-sm text-gray-400">ads by Monetag</span>
         </div>
 
-        {/* Content */}
-        <div className="p-4">
-          {!isWatching && !isCompleted && (
-            <div className="text-center space-y-4">
-              <div className="w-16 h-16 bg-green-600 rounded-full flex items-center justify-center mx-auto">
-                <Play className="w-8 h-8 text-white" />
-              </div>
-              <div>
-                <h4 className="text-xl font-semibold mb-2">{task.title}</h4>
-                <p className="text-gray-400 mb-4">Watch this ad to earn ${task.reward.toFixed(6)}</p>
-                <div className="flex items-center justify-center gap-2 text-sm text-gray-400">
-                  <Clock className="w-4 h-4" />
-                  <span>Duration: {task.duration} seconds</span>
-                </div>
-              </div>
-              <button
-                onClick={startAd}
-                className="w-full bg-green-600 hover:bg-green-700 py-3 rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
-              >
-                <Play className="w-5 h-5" />
-                Start Watching
-              </button>
-            </div>
-          )}
-
-          {isWatching && (
-            <div className="text-center space-y-4">
-              <div className="w-full h-40 bg-slate-700 rounded-lg flex items-center justify-center border-2 border-dashed border-slate-600">
-                <div className="text-center">
-                  <div className="w-12 h-12 bg-red-600 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <Play className="w-6 h-6 text-white" />
-                  </div>
-                  <div className="text-gray-400 text-sm">Advertisement Playing</div>
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="text-2xl font-bold text-green-400">{timeLeft}s</div>
-                <div className="w-full bg-slate-700 rounded-full h-2">
-                  <div 
-                    className="bg-green-500 h-2 rounded-full transition-all duration-1000"
-                    style={{ width: `${((task.duration! - timeLeft) / task.duration!) * 100}%` }}
-                  ></div>
-                </div>
-                <div className="text-sm text-gray-400">Please wait until the ad completes</div>
-              </div>
-            </div>
-          )}
-
-          {isCompleted && (
-            <div className="text-center space-y-4">
-              <div className="w-16 h-16 bg-green-600 rounded-full flex items-center justify-center mx-auto">
-                <CheckCircle className="w-8 h-8 text-white" />
-              </div>
-              <div>
-                <h4 className="text-xl font-semibold mb-2">Advertisement Completed!</h4>
-                <p className="text-gray-400 mb-4">You've successfully watched the advertisement</p>
-                <div className="bg-slate-700 rounded-lg p-3 mb-4">
-                  <div className="text-sm text-gray-400">Reward Earned</div>
-                  <div className="text-2xl font-bold text-green-400">${task.reward.toFixed(6)}</div>
-                </div>
-              </div>
-              <button
-                onClick={handleComplete}
-                className="w-full bg-green-600 hover:bg-green-700 py-3 rounded-lg font-medium transition-colors"
-              >
-                Claim Reward
-              </button>
-            </div>
-          )}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-gray-300">
+            <Clock className="w-4 h-4" />
+            <span>{seconds}s</span>
+          </div>
+          <div className="text-sm text-gray-400">
+            {status === 'playing' && 'Tonton iklan…'}
+            {status === 'claiming' && 'Mengklaim reward…'}
+            {status === 'done' && 'Reward masuk!'}
+            {status === 'error' && 'Gagal klaim. Coba lagi.'}
+          </div>
         </div>
       </div>
     </div>
   );
-};
-
-export default AdModal;
+}
