@@ -13,7 +13,6 @@ module.exports = function getPool() {
       acquireTimeoutMillis: 60000,
       allowExitOnIdle: false
     });
-
     // Handle pool errors
     pool.on('error', (err) => {
       console.error('Unexpected error on idle client', err);
