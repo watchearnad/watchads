@@ -31,7 +31,11 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
     }
   };
 
-  // ====== LOGIC IKLAN 16s + AUTO-CLAIM (tanpa ubah layout/list) ======
+  // ====== BALANCE lokal agar UI update setelah klaim ======
+  const [balance, setBalance] = useState<number>(userData.balance);
+  useEffect(() => { setBalance(userData.balance); }, [userData.balance]);
+
+  // ====== LOGIC IKLAN 16s + AUTO-CLAIM ======
   type Ad = { id:number; title:string|null; media_url:string; reward:number; duration_sec:number };
   const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '';
 
@@ -48,7 +52,7 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
   useEffect(() => {
     let mounted = true;
     fetch(`${API_BASE}/api/ads`)
-      .then(r => (r.ok ? r.json() : []))
+      .then(r => r.ok ? r.json() : [])
       .then((a: Ad[]) => { if (mounted) setAds(Array.isArray(a) ? a : []); })
       .catch(() => setAds([]));
     return () => { mounted = false; };
@@ -92,18 +96,17 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
 
     const url = ad.media_url || '';
 
-    // === MODE MONETAG SDK (bukan link) ===
-    // Gunakan media_url "monetag://<ZONE_ID>" di tabel ads (contoh: monetag://9834777)
+    // === MODE MONETAG SDK (media_url = "monetag://<ZONE>") ===
     if (url.startsWith('monetag://')) {
-      const zone = url.slice('monetag://'.length); // contoh: "9834777"
+      const zone = url.slice('monetag://'.length);          // contoh: "9834777"
       const fn =
-        (window as any)[`show_${zone}`] ||   // show_9834777 dari snippet Monetag
-        (window as any).show_9834777 ||      // fallback ke 9834777 (punyamu)
-        (window as any).showRewarded ||      // jaga-jaga
+        (window as any)[`show_${zone}`] ||
+        (window as any).show_9834777 ||
+        (window as any).showRewarded ||
         (window as any).playRewardedAd;
 
       if (typeof fn !== 'function') {
-        alert('Iklan belum siap. Pastikan "Get code" Monetag sudah ditempel di index.html & Zone ID sesuai.');
+        alert('Iklan belum siap. Tempel "Get code" Monetag di index.html.');
         // rollback state supaya user bisa klik lagi
         setWatchedId(prev => { const copy = [...prev]; copy[i] = null; return copy; });
         setCooldowns(prev => { const copy = [...prev]; copy[i] = 0; return copy; });
@@ -111,20 +114,11 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
         return;
       }
 
-      try {
-        // Tampilkan iklan rewarded; Promise resolve saat selesai.
-        // Countdown & auto-claim 16 detik tetap ditangani oleh state di atas (cooldowns & pendingClaim).
-        Promise.resolve(fn());
-      } catch {
-        // gagal memulai iklan: kembalikan state agar user bisa klik lagi
-        setWatchedId(prev => { const copy = [...prev]; copy[i] = null; return copy; });
-        setCooldowns(prev => { const copy = [...prev]; copy[i] = 0; return copy; });
-        pendingClaim.current[i] = false;
-      }
+      try { Promise.resolve(fn()); } catch { /* ignore */ }
       return;
     }
 
-    // === MODE LINK (fallback lama – kalau ada iklan berbentuk URL) ===
+    // === MODE LINK (fallback) ===
     const tg = typeof window !== 'undefined' ? (window as any)?.Telegram?.WebApp : null;
     if (tg?.openLink && url) tg.openLink(url, { try_instant_view: false });
     else if (url) window.open(url, '_blank', 'noopener');
@@ -150,11 +144,22 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
     const amount = Number.isFinite(ad.reward) ? ad.reward : (availableAdTasks[i]?.reward ?? 0.003);
 
     try {
-      await fetch(`${API_BASE}/api/reward`, {
+      const resp = await fetch(`${API_BASE}/api/reward`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, amount })
-      }).then(r => r.json()).catch(() => ({}));
+      });
+      const d = await resp.json().catch(() => ({} as any));
+
+      if (resp.ok && typeof d?.balance === 'number') {
+        setBalance(d.balance);               // <<< UPDATE TAMPILAN SALDO
+      } else if (d?.error === 'cooldown') {
+        alert(`Tunggu ${d.secondsLeft}s sebelum klaim lagi.`);
+      } else {
+        console.warn('Reward failed:', d);
+        alert('Server error saat kredit reward.');
+      }
+
       // reset slot agar bisa nonton lagi
       setWatchedId(prev => { const w = [...prev]; w[i] = null; return w; });
     } finally {
@@ -171,7 +176,7 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
         <p className="text-gray-400">Watch ads to earn $0.003 each</p>
       </div>
 
-      {/* Task List (layout kamu tetap) */}
+      {/* Task List */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Available Tasks</h2>
@@ -214,7 +219,6 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
                   </div>
                 </div>
 
-                {/* Satu tombol saja: Watch → countdown → auto-claim */}
                 <button
                   onClick={() => handleWatchSlot(idx)}
                   disabled={cooldowns[idx] > 0 || claiming.current[idx]}
@@ -236,7 +240,7 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
         )}
       </div>
 
-      {/* Statistics Section (tetap) */}
+      {/* Statistics */}
       <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
         <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
           <Target className="w-5 h-5" />
@@ -259,7 +263,7 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
               <span className="text-sm font-medium">Available Balance</span>
             </div>
             <div className="text-2xl font-bold text-green-400">
-              ${userData.balance.toFixed(6)}
+              ${balance.toFixed(6)}   {/* <<< pakai balance lokal */}
             </div>
             <div className="text-xs text-gray-400">ready to withdraw</div>
           </div>
@@ -282,7 +286,7 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
         </div>
       </div>
 
-      {/* Ad Modal (tetap, kalau dipakai di tempat lain) */}
+      {/* Ad Modal (tetap) */}
       {showAdModal && currentAdTask && (
         <AdModal
           task={currentAdTask}
