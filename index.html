@@ -9,5 +9,24 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/src/main.tsx"></script>
+
+  <!-- Fallback rewarded-ad 16 detik: dipakai kalau SDK iklan belum ter-load -->
+  <script>
+    (function () {
+      const FALLBACK_MS = 16000; // 16 detik
+      const simulate = () => new Promise(r => setTimeout(r, FALLBACK_MS));
+
+      // HANYA mendefinisikan bila belum ada dari jaringan iklan
+      window.show_9834777   = window.show_9834777   || simulate; // Monetag-style
+      window.showRewarded   = window.showRewarded   || window.show_9834777;
+      window.playRewardedAd = window.playRewardedAd || window.show_9834777;
+      window.showAd         = window.showAd         || window.show_9834777;
+
+      // adseason-style
+      window.adseason = window.adseason || {};
+      window.adseason.show = window.adseason.show || window.show_9834777;
+    })();
+  </script>
   </body>
 </html>
