@@ -1,4 +1,4 @@
-// api/reward.js — kredit setelah nonton (≥16 detik via log)
+// api/reward.js — kredit setelah nonton (cek cooldown ≥16 detik & update saldo)
 const getPool = require("./_db");
 
 function readBody(req) {
@@ -11,55 +11,56 @@ function readBody(req) {
   });
 }
 
-const MIN_SECONDS = 16;     // durasi minimum antar klaim
+const MIN_SECONDS = 16;
 
 module.exports = async (req, res) => {
-  try {
-    if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
+  if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
 
-    const { userId, amount } = await readBody(req);
-    const uid = Number(userId);
-    const amt = Number(amount);
+  const { userId, amount } = await readBody(req);
+  const uid = Number(userId);
+  const amt = Number(amount);
 
-    if (!Number.isFinite(uid) || uid <= 0 || !Number.isFinite(amt) || amt <= 0)
-      return res.status(400).json({ error: "bad_request" });
+  if (!Number.isFinite(uid) || uid <= 0 || !Number.isFinite(amt) || amt <= 0) {
+    return res.status(400).json({ error: "bad_request" });
+  }
 
-    const db = getPool();
+  const db = getPool();
 
-    // Buat tabel kalau belum ada (id bigint supaya cukup utk Telegram user id)
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id BIGINT PRIMARY KEY,
-        balance NUMERIC(18,6) NOT NULL DEFAULT 0,
-        referred_by BIGINT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS ad_reward_logs (
-        id BIGSERIAL PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        amount NUMERIC(18,6) NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-
-    // Verifikasi cooldown ≥16 detik dari klaim terakhir user ini
-    const last = await db.query(
-      `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS since
-         FROM ad_reward_logs
-        WHERE user_id = $1
-        ORDER BY id DESC
-        LIMIT 1`,
-      [uid]
+  // Buat tabel kalau belum ada (aman dipanggil berkali-kali)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id BIGINT PRIMARY KEY,
+      balance NUMERIC(18,6) NOT NULL DEFAULT 0,
+      referred_by BIGINT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    const since = Number(last.rows[0]?.since ?? (MIN_SECONDS + 1));
-    if (since < MIN_SECONDS) {
-      return res.status(429).json({
-        error: "cooldown",
-        secondsLeft: Math.max(0, Math.ceil(MIN_SECONDS - since)),
-      });
-    }
+    CREATE TABLE IF NOT EXISTS ad_reward_logs (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL,
+      amount NUMERIC(18,6) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 
+  // Verifikasi jeda ≥16 detik sejak klaim terakhir user ini
+  const last = await db.query(
+    `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS since
+       FROM ad_reward_logs
+      WHERE user_id = $1
+      ORDER BY id DESC
+      LIMIT 1`,
+    [uid]
+  );
+  const since = Number(last.rows[0]?.since ?? (MIN_SECONDS + 1));
+  if (since < MIN_SECONDS) {
+    return res.status(429).json({
+      error: "cooldown",
+      secondsLeft: Math.max(0, Math.ceil(MIN_SECONDS - since)),
+    });
+  }
+
+  try {
     await db.query("BEGIN");
     await db.query("INSERT INTO users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING", [uid]);
     await db.query(
@@ -73,7 +74,7 @@ module.exports = async (req, res) => {
 
     res.json({ ok: true, balance: Number(bal.rows[0]?.balance ?? 0) });
   } catch (e) {
-    try { await getPool().query("ROLLBACK"); } catch {}
+    await db.query("ROLLBACK").catch(() => {});
     console.error("[/api/reward] error:", e);
     res.status(500).json({ error: "server_error" });
   }
