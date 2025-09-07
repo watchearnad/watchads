@@ -4,69 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ad2earn — Telegram Mini App</title>
-
-    <!-- Content-Security-Policy: hanya izinkan script dari Telegram & Adsgram -->
-    <meta http-equiv="Content-Security-Policy"
-      content="
-        default-src 'self' https://telegram.org;
-        script-src 'self' 'unsafe-inline' https://telegram.org https://sad.adsgram.ai;
-        style-src 'self' 'unsafe-inline';
-        img-src * data: blob:;
-        connect-src *;
-        frame-src https://sad.adsgram.ai https://telegram.org;
-      " />
-    <style>
-      /* Kalau masih ada overlay sisa, matikan tampilan */
-      [id^='container-'], .monetag, .monetag-ad, [id*='monetag'], [class*='monetag'] { display:none !important; }
-    </style>
-
-    <!-- KILL-SWITCH: blokir dynamic script/link & openLink ke domain Monetag apa pun -->
-    <script>
-      (function () {
-        const BAD = /monetag|realsrv|libtl\.com|invoke\.js/i;
-
-        // block window.open ke domain Monetag
-        const _open = window.open;
-        window.open = function (u, n, f) { if (BAD.test(String(u||""))) return null; return _open ? _open.call(window, u, n, f) : null; };
-
-        // block Telegram openLink ke domain Monetag
-        const tgReady = () => {
-          const tg = window.Telegram && window.Telegram.WebApp;
-          if (tg && tg.openLink) {
-            const old = tg.openLink.bind(tg);
-            tg.openLink = (u, o) => BAD.test(String(u||"")) ? null : old(u, o);
-          }
-        };
-
-        // block dynamic <script src=...> injeksi ke domain Monetag
-        const append = Element.prototype.appendChild;
-        Element.prototype.appendChild = function (node) {
-          try {
-            if (node && node.tagName === 'SCRIPT' && BAD.test(String(node.src||""))) return node;
-          } catch (e) {}
-          return append.call(this, node);
-        };
-
-        // juga blok lewat setAttribute('src', ...)
-        const _set = HTMLScriptElement.prototype.setAttribute;
-        HTMLScriptElement.prototype.setAttribute = function(name, value){
-          if (name.toLowerCase() === 'src' && BAD.test(String(value||""))) return;
-          return _set.call(this, name, value);
-        };
-
-        // panggil lagi saat Telegram WebApp siap
-        document.addEventListener('DOMContentLoaded', tgReady);
-        window.addEventListener('load', tgReady);
-      })();
-    </script>
   </head>
   <body>
     <div id="root"></div>
 
-    <!-- ENTRY -->
+    <!-- Entry -->
     <script type="module" src="/src/main.tsx"></script>
 
-    <!-- WAJIB: Telegram WebApp + Adsgram SDK (tanpa script Monetag apa pun) -->
+    <!-- WAJIB: Telegram WebApp + Adsgram SDK (tidak ada script lain) -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://sad.adsgram.ai/js/sad.min.js"></script>
   </body>
