@@ -1,4 +1,6 @@
+// api/health.js
 const getPool = require("./_db");
+
 module.exports = async (req, res) => {
   try {
     if (!process.env.DATABASE_URL) {
