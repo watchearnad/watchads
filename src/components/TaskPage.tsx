@@ -8,7 +8,6 @@ interface TaskPageProps {
   userData: UserData;
   completeTask: (taskId: number) => void;
 }
-
 type Ad = { id:number; title:string|null; media_url:string; reward:number; duration_sec:number };
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '';
 
