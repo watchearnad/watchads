@@ -8,25 +8,87 @@
   </head>
   <body>
     <div id="root"></div>
+
+    <!-- App -->
     <script type="module" src="/src/main.tsx"></script>
-    <script type="module" src="/src/main.tsx"></script>
 
-  <!-- Fallback rewarded-ad 16 detik: dipakai kalau SDK iklan belum ter-load -->
-  <script>
-    (function () {
-      const FALLBACK_MS = 16000; // 16 detik
-      const simulate = () => new Promise(r => setTimeout(r, FALLBACK_MS));
+    <!-- ===================== MONETAG (PASTE KODE ASLI DI SINI) =====================
+         Buka dashboard Monetag → pilih format Rewarded/Interstitial → copy FULL script
+         dari Monetag dan paste persis di antara START/END ini. -->
+    <!-- START: MONETAG SNIPPET -->
+    <!--
+      Contoh placeholder (JANGAN PAKAI ini — pakai yang dari Monetag):
+      <script src="https://YOUR_MONETAG_CDN.js" data-zone="9834777"></script>
+      <script>function show_9834777(){ return new Promise(...); }</script>
+    -->
+    <!-- END: MONETAG SNIPPET -->
 
-      // HANYA mendefinisikan bila belum ada dari jaringan iklan
-      window.show_9834777   = window.show_9834777   || simulate; // Monetag-style
-      window.showRewarded   = window.showRewarded   || window.show_9834777;
-      window.playRewardedAd = window.playRewardedAd || window.show_9834777;
-      window.showAd         = window.showAd         || window.show_9834777;
+    <!-- Wrapper: kredit ke server setelah iklan selesai (tanpa ubah React UI) -->
+    <script>
+      (function () {
+        // Nominal reward per iklan — samakan dengan yang kamu tampilkan di UI
+        const REWARD_USD = 0.003;
 
-      // adseason-style
-      window.adseason = window.adseason || {};
-      window.adseason.show = window.adseason.show || window.show_9834777;
-    })();
-  </script>
+        // Baca Telegram userId dari Mini App
+        function getUserId() {
+          try { return window?.Telegram?.WebApp?.initDataUnsafe?.user?.id || null; }
+          catch { return null; }
+        }
+
+        // Panggil API server untuk kredit saldo
+        async function creditAfterAd() {
+          const userId = getUserId();
+          if (!userId) {
+            console.warn("[reward] User ID tidak ditemukan dari Telegram WebApp.");
+            return;
+          }
+          try {
+            const r = await fetch(`/api/reward`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ userId, amount: REWARD_USD })
+            });
+            const d = await r.json();
+            if (r.ok) {
+              // Broadcast ke UI kalau mau ditangkap (opsional)
+              window.dispatchEvent(new CustomEvent("ad:rewarded", { detail: d }));
+              console.log("[reward] balance:", d.balance);
+            } else if (d?.error === "cooldown") {
+              alert(`Tunggu ${d.secondsLeft}s sebelum klaim lagi.`);
+            } else {
+              alert("Server error saat kredit reward.");
+            }
+          } catch (e) {
+            console.error("[reward] gagal memanggil /api/reward", e);
+          }
+        }
+
+        // Bungkus fungsi Monetag show_9834777() → setelah resolve, kredit server.
+        // Wrapper ini akan menunggu sampai Monetag mendefinisikan fungsinya.
+        let wrapped = false;
+        function wrapIfReady() {
+          const orig = window.show_9834777;
+          if (wrapped || typeof orig !== "function") return;
+          wrapped = true;
+          window.show_9834777 = async function (...args) {
+            const out = await orig.apply(this, args);
+            await creditAfterAd();
+            return out;
+          };
+          console.log("[monetag] show_9834777 dibungkus untuk auto-reward.");
+        }
+
+        // Coba wrap sekarang dan secara periodik (kalau Monetag load belakangan)
+        wrapIfReady();
+        const iv = setInterval(() => {
+          wrapIfReady();
+          if (wrapped) clearInterval(iv);
+        }, 500);
+
+        // OPTIONAL: kalau script Monetag kamu mengekspos nama lain, map ke show_9834777
+        // Contoh jika yang ada adalah show_1234567, uncomment baris di bawah dan ganti 1234567:
+        // window.show_9834777 = window.show_9834777 || ( () => window["show_1234567"]() );
+      })();
+    </script>
   </body>
 </html>
