@@ -30,73 +30,133 @@ function extractParams(req) {
 }
 
 module.exports = async (req, res) => {
+  // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "GET" && req.method !== "POST")
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Content-Type", "application/json");
+  
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+  
+  if (req.method !== "GET" && req.method !== "POST") {
     return res.status(200).json({ ok: false, reason: "method_not_allowed" });
+  }
 
+  let db;
   try {
     const { uid, amt } = await extractParams(req);
-    if (!Number.isFinite(uid) || uid <= 0 || !Number.isFinite(amt) || amt <= 0)
-      return res.status(200).json({ ok: false, reason: "bad_request", detail: { userId: uid, amount: amt } });
-
-    const db = getPool();
     
-    // Ensure tables exist
+    if (!Number.isFinite(uid) || uid <= 0 || !Number.isFinite(amt) || amt <= 0) {
+      return res.status(200).json({ 
+        ok: false, 
+        reason: "bad_request", 
+        detail: { userId: uid, amount: amt } 
+      });
+    }
+
+    db = getPool();
+    
+    // Ensure tables exist with proper indexes
     await db.query(`
       CREATE TABLE IF NOT EXISTS users(
         user_id BIGINT PRIMARY KEY,
-        balance DOUBLE PRECISION DEFAULT 0
+        balance DOUBLE PRECISION DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
       );
+      
       CREATE TABLE IF NOT EXISTS ad_reward_logs(
         id BIGSERIAL PRIMARY KEY,
         user_id BIGINT NOT NULL,
         amount DOUBLE PRECISION NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      
+      CREATE INDEX IF NOT EXISTS idx_ad_reward_logs_user_created 
+        ON ad_reward_logs(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id);
     `);
 
-    // Check cooldown
-    const last = await db.query(
-      `SELECT EXTRACT(EPOCH FROM (NOW()-created_at)) AS since
-         FROM ad_reward_logs WHERE user_id=$1
-         ORDER BY id DESC LIMIT 1`,
+    // Check cooldown with optimized query
+    const lastReward = await db.query(
+      `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS seconds_since
+       FROM ad_reward_logs 
+       WHERE user_id = $1 
+       ORDER BY created_at DESC 
+       LIMIT 1`,
       [uid]
     );
-    const since = Number(last.rows[0]?.since ?? MIN_SECONDS + 1);
-    if (since < MIN_SECONDS) {
-      const secondsLeft = Math.ceil(MIN_SECONDS - since);
-      return res.status(200).json({ ok: false, cooldown: true, secondsLeft });
+    
+    const secondsSince = Number(lastReward.rows[0]?.seconds_since ?? MIN_SECONDS + 1);
+    
+    if (secondsSince < MIN_SECONDS) {
+      const secondsLeft = Math.ceil(MIN_SECONDS - secondsSince);
+      return res.status(200).json({ 
+        ok: false, 
+        cooldown: true, 
+        secondsLeft 
+      });
     }
 
-    // Process reward
+    // Process reward with transaction
     await db.query("BEGIN");
     
-    // Upsert user
-    await db.query(`
-      INSERT INTO users(user_id, balance) VALUES($1, $2) 
-      ON CONFLICT(user_id) DO UPDATE SET balance = users.balance + $2
-    `, [uid, amt]);
+    try {
+      // Upsert user with updated timestamp
+      await db.query(`
+        INSERT INTO users(user_id, balance, created_at, updated_at) 
+        VALUES($1, $2, NOW(), NOW()) 
+        ON CONFLICT(user_id) DO UPDATE SET 
+          balance = users.balance + $2,
+          updated_at = NOW()
+      `, [uid, amt]);
+      
+      // Insert reward log
+      await db.query(
+        `INSERT INTO ad_reward_logs(user_id, amount) VALUES($1, $2)`, 
+        [uid, amt]
+      );
+      
+      // Get updated balance
+      const balanceResult = await db.query(
+        `SELECT balance FROM users WHERE user_id = $1`, 
+        [uid]
+      );
+      
+      const balance = Number(balanceResult.rows[0]?.balance ?? 0);
+      
+      await db.query("COMMIT");
+      
+      return res.status(200).json({ 
+        ok: true, 
+        credited: amt, 
+        balance,
+        cooldownSeconds: MIN_SECONDS
+      });
+      
+    } catch (transactionError) {
+      await db.query("ROLLBACK");
+      throw transactionError;
+    }
     
-    // Insert log
-    await db.query(`INSERT INTO ad_reward_logs(user_id, amount) VALUES($1, $2)`, [uid, amt]);
+  } catch (error) {
+    // Ensure rollback on any error
+    if (db) {
+      try { 
+        await db.query("ROLLBACK"); 
+      } catch (rollbackError) {
+        console.error("Rollback error:", rollbackError);
+      }
+    }
     
-    // Get updated balance
-    const bal = await db.query(`SELECT balance FROM users WHERE user_id=$1`, [uid]);
-    const balance = Number(bal.rows[0]?.balance ?? 0);
+    console.error("Reward endpoint error:", error);
     
-    await db.query("COMMIT");
-    
-    res.status(200).json({ ok: true, credited: amt, balance });
-    
-  } catch (e) {
-    try { await getPool().query("ROLLBACK"); } catch {}
-    console.error("Reward error:", e);
-    res.status(200).json({ 
+    return res.status(200).json({ 
       ok: false, 
       reason: "server_error", 
-      detail: e.message || String(e) 
+      detail: process.env.NODE_ENV === 'development' ? error.message : "Internal server error"
     });
   }
 };
