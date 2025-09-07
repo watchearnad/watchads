@@ -14,7 +14,7 @@ module.exports = async (req, res) => {
   try {
     const db = getPool();
     
-    // Test database connection
+  // Test database connection
     const startTime = Date.now();
     const result = await db.query("SELECT 1 as health_check, NOW() as server_time");
     const responseTime = Date.now() - startTime;
