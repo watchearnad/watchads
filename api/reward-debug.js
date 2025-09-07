@@ -26,7 +26,7 @@ module.exports = async (req, res) => {
 
     const db = getPool();
     
-    // Ensure tables exist
+   // Ensure tables exist
     await db.query(`
       CREATE TABLE IF NOT EXISTS users(
         user_id BIGINT PRIMARY KEY,
