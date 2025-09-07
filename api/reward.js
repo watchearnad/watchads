@@ -77,7 +77,7 @@ module.exports = async (req, res) => {
     await db.query("BEGIN");
     await db.query(`INSERT INTO public.users(id) VALUES($1) ON CONFLICT(id) DO NOTHING`, [uid]);
     await db.query(`UPDATE public.users SET balance = COALESCE(balance,0)+$1, updated_at=NOW() WHERE id=$2`, [amt, uid]);
-    await db.query(`INSERT INTO public.ad_reward_logs(user_id,amount) VALUES($1,$2)`, [uid, amt]);
+    await db.query(`INSERT INTO public.ad_reward_logs(user_id,amount) VALUES ($1,$2)`, [uid, amt]);
     const bal = await db.query(`SELECT balance FROM public.users WHERE id=$1`, [uid]);
     await db.query("COMMIT");
     res.json({ ok: true, balance: Number(bal.rows[0]?.balance ?? 0) });
