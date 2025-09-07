@@ -1,28 +1,61 @@
-// api/reward.js — kredit reward + log + cooldown 16s (verbose error)
+// api/reward.js — super-tolerant handler: terima GET/POST, JSON/urlencoded/query, + cooldown 16s
 const getPool = require("./_db");
-
-function readBody(req) {
-  return new Promise((resolve) => {
-    let d = "";
-    req.on("data", (c) => (d += c));
-    req.on("end", () => { try { resolve(JSON.parse(d || "{}")); } catch { resolve({}); } });
-  });
-}
 const MIN_SECONDS = 16;
 
-module.exports = async (req, res) => {
-  if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
+// ambil uid/amt dari body (json/form) dan/atau query (?uid=..&amt=..)
+function extractParams(req) {
+  return new Promise((resolve) => {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    let uid = url.searchParams.get("uid") ?? url.searchParams.get("userId");
+    let amt = url.searchParams.get("amt") ?? url.searchParams.get("amount");
 
-  const { userId, amount } = await readBody(req);
-  const uid = Number(userId);
-  const amt = Number(amount);
+    // kalau sudah ada dari query, tidak wajib baca body
+    if (uid && amt) return resolve({ uid: Number(uid), amt: Number(amt) });
+
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const ct = (req.headers["content-type"] || "").toLowerCase();
+
+      try {
+        if (ct.includes("application/json")) {
+          const j = JSON.parse(body || "{}");
+          uid ??= j.userId ?? j.uid;
+          amt ??= j.amount ?? j.amt;
+        } else if (ct.includes("application/x-www-form-urlencoded")) {
+          const p = new URLSearchParams(body || "");
+          uid ??= p.get("userId") ?? p.get("uid");
+          amt ??= p.get("amount") ?? p.get("amt");
+        }
+      } catch (_) {
+        // abaikan parsing error; biar lanjut validasi di bawah
+      }
+
+      resolve({ uid: Number(uid), amt: Number(amt) });
+    });
+  });
+}
+
+module.exports = async (req, res) => {
+  // izinkan GET/POST + preflight
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET" && req.method !== "POST")
+    return res.status(405).json({ error: "method_not_allowed" });
+
+  // ambil parameter dari apapun yang dikirim front-end
+  const { uid, amt } = await extractParams(req);
+
   if (!Number.isFinite(uid) || uid <= 0 || !Number.isFinite(amt) || amt <= 0) {
-    return res.status(400).json({ error: "bad_request", detail: { userId, amount } });
+    return res
+      .status(400)
+      .json({ error: "bad_request", detail: { userId: uid, amount: amt } });
   }
 
   const db = getPool();
 
-  // pastikan skema aman dipanggil berulang
+  // pastikan tabel ada (idempotent)
   await db.query(`
     CREATE TABLE IF NOT EXISTS public.users (
       id BIGINT PRIMARY KEY,
@@ -37,22 +70,9 @@ module.exports = async (req, res) => {
       amount NUMERIC(18,6) NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    DO $$
-    BEGIN
-      IF EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_schema='public' AND table_name='users'
-                   AND column_name='id' AND data_type='integer') THEN
-        ALTER TABLE public.users ALTER COLUMN id TYPE BIGINT USING id::BIGINT;
-      END IF;
-      IF EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_schema='public' AND table_name='ad_reward_logs'
-                   AND column_name='user_id' AND data_type='integer') THEN
-        ALTER TABLE public.ad_reward_logs ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT;
-      END IF;
-    END $$;
   `);
 
-  // cek cooldown
+  // cek cooldown 16 detik
   const last = await db.query(
     `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS since
        FROM public.ad_reward_logs
@@ -61,22 +81,37 @@ module.exports = async (req, res) => {
       LIMIT 1`,
     [uid]
   );
-  const since = Number(last.rows[0]?.since ?? (MIN_SECONDS + 1));
+  const since = Number(last.rows[0]?.since ?? MIN_SECONDS + 1);
   if (since < MIN_SECONDS) {
-    return res.status(429).json({ error: "cooldown", secondsLeft: Math.ceil(MIN_SECONDS - since) });
+    return res
+      .status(429)
+      .json({ error: "cooldown", secondsLeft: Math.ceil(MIN_SECONDS - since) });
   }
 
   try {
     await db.query("BEGIN");
-    await db.query("INSERT INTO public.users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING", [uid]);
-    await db.query("UPDATE public.users SET balance = COALESCE(balance,0)+$1, updated_at = NOW() WHERE id=$2", [amt, uid]);
-    await db.query("INSERT INTO public.ad_reward_logs (user_id, amount) VALUES ($1,$2)", [uid, amt]);
-    const bal = await db.query("SELECT balance FROM public.users WHERE id=$1", [uid]);
+    await db.query(
+      "INSERT INTO public.users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING",
+      [uid]
+    );
+    await db.query(
+      "UPDATE public.users SET balance = COALESCE(balance,0) + $1, updated_at = NOW() WHERE id = $2",
+      [amt, uid]
+    );
+    await db.query(
+      "INSERT INTO public.ad_reward_logs (user_id, amount) VALUES ($1,$2)",
+      [uid, amt]
+    );
+    const bal = await db.query(
+      "SELECT balance FROM public.users WHERE id=$1",
+      [uid]
+    );
     await db.query("COMMIT");
-    res.json({ ok: true, balance: Number(bal.rows[0]?.balance ?? 0) });
+    return res.json({ ok: true, balance: Number(bal.rows[0]?.balance ?? 0) });
   } catch (e) {
     await db.query("ROLLBACK").catch(() => {});
-    // kirimkan kode dan message supaya kelihatan biangnya
-    res.status(500).json({ error: "server_error", code: e.code || null, message: e.message || String(e) });
+    return res
+      .status(500)
+      .json({ error: "server_error", code: e.code || null, message: e.message || String(e) });
   }
 };
