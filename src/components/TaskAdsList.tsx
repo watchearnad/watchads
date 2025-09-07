@@ -1,47 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { showAdsgram } from "../lib/adsgram";
 
-/** ===== Adsgram helper (inline) ===== */
-declare global { interface Window { Adsgram?: any; Telegram?: any } }
-
-const REWARD_BLOCK_ID = import.meta.env.VITE_ADSGRAM_REWARD_BLOCK_ID as string | undefined;
-const INTER_BLOCK_ID  = import.meta.env.VITE_ADSGRAM_INTER_BLOCK_ID  as string | undefined;
-
-let _rewardCtrl: any | null = null;
-let _interCtrl:  any | null = null;
-
-function ensureAdsgramReady() {
-  if (!window?.Adsgram) return false;
-  if (!_rewardCtrl && REWARD_BLOCK_ID) _rewardCtrl = window.Adsgram.init({ blockId: REWARD_BLOCK_ID });
-  if (!_interCtrl  && INTER_BLOCK_ID)  _interCtrl  = window.Adsgram.init({ blockId: INTER_BLOCK_ID  });
-  return !!(_rewardCtrl || _interCtrl);
-}
-
-async function showAdsgram(): Promise<"rewarded"|"interstitial"|"nofill"> {
-  const ok = ensureAdsgramReady();
-  if (!ok) throw new Error("Adsgram SDK not loaded or blockId missing");
-
-  // coba Rewarded dulu
-  if (_rewardCtrl?.show) {
-    try { await _rewardCtrl.show(); return "rewarded"; }
-    catch { /* no fill / closed */ }
-  }
-  // fallback Interstitial
-  if (_interCtrl?.show) {
-    try { await _interCtrl.show(); return "interstitial"; }
-    catch { /* no fill */ }
-  }
-  return "nofill";
-}
-/** ===== End Adsgram helper ===== */
-
-type Ad = {
-  id: number;
-  title: string | null;
-  media_url: string;     // tidak dipakai lagi untuk openLink
-  reward: number;
-  duration_sec: number;
-};
-
+type Ad = { id:number; title:string|null; media_url:string; reward:number; duration_sec:number };
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 
 function getTG(): any | null {
@@ -52,31 +12,27 @@ function getTG(): any | null {
 
 export default function TaskAdsList() {
   const [ads, setAds] = useState<Ad[]>([]);
-  const [balance, setBalance] = useState<number>(0);
-  const [userId, setUserId] = useState<number>(123);        // fallback aman
+  const [balance, setBalance] = useState(0);
+  const [userId, setUserId] = useState<number>(123);
   const [cooldown, setCooldown] = useState(0);
   const [loading, setLoading] = useState(true);
   const [claiming, setClaiming] = useState(false);
   const [activeId, setActiveId] = useState<number | null>(null);
   const guard = useRef(false);
 
-  // ambil userId dari Telegram setelah mount
   useEffect(() => {
     const tg = getTG();
     const uid = tg?.initDataUnsafe?.user?.id;
     if (typeof uid === "number" && Number.isFinite(uid)) setUserId(uid);
   }, []);
 
-  // load ads + saldo
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
         const a = await fetch(`${API_BASE}/api/ads`).then(r => r.ok ? r.json() : []);
         if (mounted && Array.isArray(a)) setAds(a);
-        const b = await fetch(`${API_BASE}/api/balance/${userId}`)
-          .then(r => r.ok ? r.json() : { balance: 0 })
-          .catch(() => ({ balance: 0 }));
+        const b = await fetch(`${API_BASE}/api/balance/${userId}`).then(r => r.ok ? r.json() : { balance: 0 });
         if (mounted) setBalance(Number(b.balance) || 0);
       } finally {
         if (mounted) setLoading(false);
@@ -91,20 +47,15 @@ export default function TaskAdsList() {
     return () => clearInterval(t);
   }, [cooldown]);
 
-  /** Tonton iklan via Adsgram (tidak buka Monetag lagi) */
+  /** Tonton iklan via Adsgram (bukan openLink Monetag) */
   async function openAd(ad: Ad) {
     if (guard.current) return;
     guard.current = true;
     try {
       setActiveId(ad.id);
-      const result = await showAdsgram();             // "rewarded" | "interstitial" | "nofill"
-      if (result === "nofill") {
-        console.log("Adsgram no fill");               // bisa tampilkan toast jika mau
-        setActiveId(null);
-        return;
-      }
-      // mulai cooldown sesuai durasi task; klaim baru aktif ketika 0
-      setCooldown(ad.duration_sec || 16);
+      const result = await showAdsgram();            // "rewarded" | "interstitial" | "nofill"
+      if (result === "nofill") { setActiveId(null); return; }
+      setCooldown(ad.duration_sec || 16);            // baru bisa klaim setelah habis
     } catch (e) {
       console.log("Ad error:", e);
       setActiveId(null);
@@ -113,7 +64,7 @@ export default function TaskAdsList() {
     }
   }
 
-  /** Klaim reward ke backend setelah selesai nonton + cooldown habis */
+  /** Klaim reward (setelah tonton + cooldown 0) */
   async function claim(ad: Ad) {
     if (claiming || guard.current || cooldown > 0 || activeId !== ad.id) return;
     guard.current = true;
@@ -136,28 +87,16 @@ export default function TaskAdsList() {
     }
   }
 
-  if (loading) {
-    return (
-      <section className="p-4 rounded-2xl border border-slate-700 bg-slate-800/40">
-        Loading tasks…
-      </section>
-    );
-  }
+  if (loading) return <section className="p-4 rounded-2xl border border-slate-700 bg-slate-800/40">Loading tasks…</section>;
 
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Available Tasks</h3>
-        <span className="text-xs bg-sky-600/15 text-sky-400 px-3 py-1 rounded-full">
-          {ads.length} remaining
-        </span>
+        <span className="text-xs bg-sky-600/15 text-sky-400 px-3 py-1 rounded-full">{ads.length} remaining</span>
       </div>
 
-      {ads.length === 0 && (
-        <div className="p-4 rounded-2xl border border-slate-700 bg-slate-800/40">
-          Belum ada iklan aktif.
-        </div>
-      )}
+      {ads.length === 0 && <div className="p-4 rounded-2xl border border-slate-700 bg-slate-800/40">Belum ada iklan aktif.</div>}
 
       {ads.map((ad, idx) => {
         const isActive = activeId === ad.id;
@@ -173,12 +112,7 @@ export default function TaskAdsList() {
                 </div>
               </div>
               <div className="flex gap-2 shrink-0">
-                <button
-                  onClick={() => openAd(ad)}
-                  className="px-4 py-2 rounded-xl bg-emerald-600 text-white"
-                >
-                  Watch Ad
-                </button>
+                <button onClick={() => openAd(ad)} className="px-4 py-2 rounded-xl bg-emerald-600 text-white">Watch Ad</button>
                 <button
                   onClick={() => claim(ad)}
                   disabled={!isActive || cooldown > 0 || claiming}
