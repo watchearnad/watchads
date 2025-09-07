@@ -1,4 +1,4 @@
-// api/reward.js — kredit reward + log + cooldown 16s (auto-fix schema umum)
+// api/reward.js — kredit reward + log + cooldown 16s (verbose error)
 const getPool = require("./_db");
 
 function readBody(req) {
@@ -8,7 +8,6 @@ function readBody(req) {
     req.on("end", () => { try { resolve(JSON.parse(d || "{}")); } catch { resolve({}); } });
   });
 }
-
 const MIN_SECONDS = 16;
 
 module.exports = async (req, res) => {
@@ -18,12 +17,12 @@ module.exports = async (req, res) => {
   const uid = Number(userId);
   const amt = Number(amount);
   if (!Number.isFinite(uid) || uid <= 0 || !Number.isFinite(amt) || amt <= 0) {
-    return res.status(400).json({ error: "bad_request" });
+    return res.status(400).json({ error: "bad_request", detail: { userId, amount } });
   }
 
   const db = getPool();
 
-  // Pastikan skema benar (aman diulang)
+  // pastikan skema aman dipanggil berulang
   await db.query(`
     CREATE TABLE IF NOT EXISTS public.users (
       id BIGINT PRIMARY KEY,
@@ -53,7 +52,7 @@ module.exports = async (req, res) => {
     END $$;
   `);
 
-  // Cek cooldown ≥16 detik
+  // cek cooldown
   const last = await db.query(
     `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS since
        FROM public.ad_reward_logs
@@ -64,24 +63,20 @@ module.exports = async (req, res) => {
   );
   const since = Number(last.rows[0]?.since ?? (MIN_SECONDS + 1));
   if (since < MIN_SECONDS) {
-    return res.status(429).json({ error: "cooldown", secondsLeft: Math.max(0, Math.ceil(MIN_SECONDS - since)) });
+    return res.status(429).json({ error: "cooldown", secondsLeft: Math.ceil(MIN_SECONDS - since) });
   }
 
   try {
     await db.query("BEGIN");
     await db.query("INSERT INTO public.users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING", [uid]);
-    await db.query("UPDATE public.users SET balance = COALESCE(balance,0) + $1, updated_at = NOW() WHERE id = $2", [amt, uid]);
+    await db.query("UPDATE public.users SET balance = COALESCE(balance,0)+$1, updated_at = NOW() WHERE id=$2", [amt, uid]);
     await db.query("INSERT INTO public.ad_reward_logs (user_id, amount) VALUES ($1,$2)", [uid, amt]);
     const bal = await db.query("SELECT balance FROM public.users WHERE id=$1", [uid]);
     await db.query("COMMIT");
     res.json({ ok: true, balance: Number(bal.rows[0]?.balance ?? 0) });
   } catch (e) {
     await db.query("ROLLBACK").catch(() => {});
-    // Kasih error yang mudah dipahami di frontend
-    if (e && e.code === "22003") { // integer out of range
-      return res.status(500).json({ error: "schema_error_id_overflow" });
-    }
-    console.error("[/api/reward] error:", e);
-    res.status(500).json({ error: "server_error" });
+    // kirimkan kode dan message supaya kelihatan biangnya
+    res.status(500).json({ error: "server_error", code: e.code || null, message: e.message || String(e) });
   }
 };
