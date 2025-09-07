@@ -15,7 +15,7 @@ module.exports = async (req, res) => {
   try {
     const db = getPool();
 
-    // Create all necessary tables with proper indexes
+  // Create all necessary tables with proper indexes
     await db.query(`
       -- Users table
       CREATE TABLE IF NOT EXISTS users (
