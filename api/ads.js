@@ -1,10 +1,8 @@
-// api/ads.js — Vercel Serverless
+// api/ads.js — ambil daftar iklan aktif
 const getPool = require("./_db");
-
 module.exports = async (req, res) => {
-  const db = getPool();
   try {
-    // Pastikan tabel ada (aman dipanggil berkali-kali)
+    const db = getPool();
     await db.query(`
       CREATE TABLE IF NOT EXISTS ads (
         id SERIAL PRIMARY KEY,
@@ -17,8 +15,6 @@ module.exports = async (req, res) => {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
-
-    // Ambil iklan aktif saja
     const q = await db.query(`
       SELECT id, title, media_url, reward, duration_sec
       FROM ads
@@ -27,18 +23,14 @@ module.exports = async (req, res) => {
       ORDER BY id ASC
       LIMIT 50;
     `);
-
-    // Normalisasi output untuk frontend
-    const rows = q.rows.map(r => ({
+    res.setHeader("Content-Type","application/json");
+    res.status(200).end(JSON.stringify(q.rows.map(r => ({
       id: r.id,
       title: r.title,
       media_url: r.media_url,
       reward: Number(r.reward ?? 0),
       duration_sec: Number(r.duration_sec ?? 16),
-    }));
-
-    res.setHeader("Content-Type", "application/json");
-    res.status(200).end(JSON.stringify(rows));
+    }))));
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "server_error" });
