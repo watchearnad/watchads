@@ -1,10 +1,7 @@
-// api/health.js
 const getPool = require("./_db");
-
 module.exports = async (req, res) => {
   try {
-    const hasEnv = !!process.env.DATABASE_URL;
-    if (!hasEnv) {
+    if (!process.env.DATABASE_URL) {
       return res.status(500).json({ ok: false, error: "DATABASE_URL missing" });
     }
     const db = getPool();
