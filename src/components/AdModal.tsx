@@ -39,7 +39,7 @@ export default function AdModal({ task, onComplete, onClose }: Props) {
       setStatus('claiming');
       claim();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seconds, status]);
 
   async function claim() {
