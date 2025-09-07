@@ -1,106 +1,132 @@
-import React, { useEffect, useState } from 'react';
-import { X, Clock } from 'lucide-react';
-import { Task } from '../types';
+// src/components/AdModal.tsx
+import { useEffect, useMemo, useRef, useState } from "react";
+import { showAdsgram } from "../lib/adsgram";
 
-interface Props {
-  task: Task;
-  onComplete: () => void;
+type Task = {
+  id: number;
+  title?: string | null;
+  reward?: number;
+  duration_sec?: number;
+};
+
+type Props = {
+  open: boolean;
+  task: Task | null;
+  userId?: number;
   onClose: () => void;
+  onComplete?: (payload?: { taskId: number; reward: number }) => void;
+};
+
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
+
+function getTG(): any | null {
+  if (typeof window === "undefined") return null;
+  // @ts-ignore
+  return window?.Telegram?.WebApp ?? null;
 }
 
-export default function AdModal({ task, onComplete, onClose }: Props) {
-  const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '';
-  const [seconds, setSeconds] = useState<number>(task.duration ?? 16);
-  const [status, setStatus] = useState<'playing' | 'claiming' | 'done' | 'error'>('playing');
-  const [userId, setUserId] = useState<number>(123);
+export default function AdModal({ open, task, userId: userIdProp, onClose, onComplete }: Props) {
+  const [status, setStatus] = useState<"idle"|"playing"|"claiming"|"done"|"nofill"|"error">("idle");
+  const started = useRef(false);
 
-  // ambil user id telegram
-  useEffect(() => {
-    const tg = (window as any)?.Telegram?.WebApp;
+  const reward = useMemo(() => Number(task?.reward ?? 1), [task?.reward]);
+
+  // ambil userId dari Telegram jika tidak dipassing lewat props
+  const userId = useMemo(() => {
+    if (typeof userIdProp === "number" && Number.isFinite(userIdProp)) return userIdProp;
+    const tg = getTG();
     const uid = tg?.initDataUnsafe?.user?.id;
-    if (typeof uid === 'number' && Number.isFinite(uid)) setUserId(uid);
-  }, []);
+    return (typeof uid === "number" && Number.isFinite(uid)) ? uid : 123;
+  }, [userIdProp]);
 
-  // tampilkan iklan monetag & mulai hitung mundur
   useEffect(() => {
-    const show =
-      (window as any).show_9834777 ||
-      (window as any).showRewarded ||
-      (window as any).playRewardedAd ||
-      (() => Promise.resolve());
-    try { show().catch(() => {}); } catch {}
-    const t = setInterval(() => setSeconds(s => (s > 0 ? s - 1 : 0)), 1000);
-    return () => clearInterval(t);
-  }, []);
+    // jalanin flow IKLAN -> CLAIM otomatis saat modal open
+    if (!open || !task || started.current) return;
+    started.current = true;
 
-  // selesai 16s -> klaim
-  useEffect(() => {
-    if (seconds === 0 && status === 'playing') {
-      setStatus('claiming');
-      claim();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seconds, status]);
-
-  async function claim() {
-    let tries = 0;
-    while (tries < 6) {
+    (async () => {
       try {
+        setStatus("playing");
+        const result = await showAdsgram(); // "rewarded" | "interstitial" | "nofill"
+        if (result === "nofill") { setStatus("nofill"); return; }
+
+        setStatus("claiming");
         const res = await fetch(`${API_BASE}/api/reward`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, amount: task.reward ?? 0.003 }),
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, amount: reward })
         });
-        const data: any = await res.json().catch(() => ({}));
+        await res.json().catch(() => ({}));
 
-        // kalau masih cooldown → tunggu sisa detik, lanjut play lagi (tanpa alert)
-        if (res.status === 429 && typeof data.secondsLeft === 'number') {
-          const left = Math.max(1, Math.ceil(data.secondsLeft));
-          setSeconds(left);
-          setStatus('playing'); // biar timer jalan lagi; nanti auto-claim lagi saat 0
-          return;
-        }
-
-        // sukses
-        if (res.ok && !data?.error) {
-          setStatus('done');
-          onComplete();
-          return;
-        }
-
-        // error lain → retry beberapa kali
-        tries++;
-        await new Promise(r => setTimeout(r, 1200));
-      } catch {
-        tries++;
-        await new Promise(r => setTimeout(r, 1200));
+        setStatus("done");
+        onComplete?.({ taskId: task.id, reward });
+        // auto close setelah sedikit jeda
+        setTimeout(() => onClose(), 700);
+      } catch (e) {
+        console.log(e);
+        setStatus("error");
       }
-    }
-    setStatus('error'); // tampilkan status, TANPA alert
-  }
+    })();
 
+    // reset flag saat modal ditutup
+    return () => { started.current = false; setStatus("idle"); };
+  }, [open, task, userId, reward, onClose, onComplete]);
+
+  if (!open || !task) return null;
+
+  // UI modal sederhana (Tailwind)
   return (
-    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-slate-800 rounded-2xl border border-slate-700 p-4 relative">
-        <button onClick={onClose} className="absolute right-3 top-3 text-gray-400 hover:text-white">
-          <X />
-        </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* backdrop */}
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
-        <div className="aspect-video w-full bg-black/40 rounded-lg mb-4 overflow-hidden flex items-center justify-center">
-          <span className="text-sm text-gray-400">ads by Monetag</span>
+      {/* card */}
+      <div className="relative z-10 w-[92%] max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-xl">
+        <div className="mb-3">
+          <h3 className="text-lg font-semibold truncate">
+            Watching Ad — {task.title || `Task #${task.id}`}
+          </h3>
+          <p className="text-sm text-slate-400 mt-1">
+            Reward: <b>{reward.toFixed(3)}</b>
+          </p>
         </div>
 
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-gray-300">
-            <Clock className="w-4 h-4" />
-            <span>{seconds}s</span>
+        {/* status */}
+        {status === "playing" && (
+          <div className="py-6 text-center">
+            <div className="animate-pulse text-slate-300">Showing ad…</div>
+            <div className="text-xs text-slate-500 mt-2">Please wait until it finishes.</div>
           </div>
-          <div className="text-sm text-gray-400">
-            {status === 'playing' && 'Tonton iklan…'}
-            {status === 'claiming' && 'Mengklaim reward…'}
-            {status === 'done' && 'Reward masuk!'}
-            {status === 'error' && 'Gagal klaim. Coba lagi.'}
+        )}
+        {status === "claiming" && (
+          <div className="py-6 text-center">
+            <div className="animate-pulse text-slate-300">Claiming reward…</div>
           </div>
+        )}
+        {status === "done" && (
+          <div className="py-6 text-center">
+            <div className="text-emerald-400 font-medium">Reward added!</div>
+          </div>
+        )}
+        {status === "nofill" && (
+          <div className="py-6 text-center">
+            <div className="text-amber-400 font-medium">No ad available right now.</div>
+            <div className="text-xs text-slate-500 mt-2">Try again in a moment.</div>
+          </div>
+        )}
+        {status === "error" && (
+          <div className="py-6 text-center">
+            <div className="text-rose-400 font-medium">Something went wrong.</div>
+          </div>
+        )}
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-xl bg-slate-700 text-white hover:bg-slate-600"
+          >
+            Close
+          </button>
         </div>
       </div>
     </div>
