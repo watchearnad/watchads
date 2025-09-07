@@ -1,10 +1,11 @@
-// api/ads.js — ambil daftar iklan aktif
+// api/ads.js — daftar iklan aktif (+ auto-seed kalau kosong)
 const getPool = require("./_db");
-module.exports = async (req, res) => {
+
+module.exports = async (_req, res) => {
   try {
     const db = getPool();
     await db.query(`
-      CREATE TABLE IF NOT EXISTS ads (
+      CREATE TABLE IF NOT EXISTS public.ads (
         id SERIAL PRIMARY KEY,
         title TEXT NOT NULL,
         media_url TEXT,
@@ -15,14 +16,27 @@ module.exports = async (req, res) => {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
+
+    // seed 3 baris Monetag jika kosong
+    const cnt = await db.query(`SELECT COUNT(*)::int AS n FROM public.ads`);
+    if ((cnt.rows[0]?.n ?? 0) === 0) {
+      await db.query(
+        `INSERT INTO public.ads (title, media_url, reward, duration_sec, active, is_active)
+         VALUES 
+         ('Monetag Rewarded #1','monetag://9834777',0.003,16,TRUE,TRUE),
+         ('Monetag Rewarded #2','monetag://9834777',0.003,16,TRUE,TRUE),
+         ('Monetag Rewarded #3','monetag://9834777',0.003,16,TRUE,TRUE)`
+      );
+    }
+
     const q = await db.query(`
-      SELECT id, title, media_url, reward, duration_sec
-      FROM ads
-      WHERE (active = TRUE OR is_active = TRUE)
-        AND media_url IS NOT NULL AND media_url <> ''
+      SELECT id, title, media_url, reward::text AS reward, duration_sec
+      FROM public.ads
+      WHERE (active OR is_active) AND (media_url IS NOT NULL)
       ORDER BY id ASC
-      LIMIT 50;
+      LIMIT 10
     `);
+
     res.setHeader("Content-Type","application/json");
     res.status(200).end(JSON.stringify(q.rows.map(r => ({
       id: r.id,
@@ -33,6 +47,6 @@ module.exports = async (req, res) => {
     }))));
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "server_error" });
+    res.status(500).json({ error: "server_error", message: e.message });
   }
 };
