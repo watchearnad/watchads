@@ -1,94 +1,78 @@
 // api/reward.js
 const getPool = require("./_db");
 
-// baca body POST aman
 function readBody(req){
-  return new Promise((resolve)=>{
-    let data=""; req.on("data",(c)=>data+=c);
-    req.on("end",()=>{ try{ resolve(JSON.parse(data||"{}")) } catch{ resolve({}) } });
+  return new Promise(resolve=>{
+    let d=""; req.on("data",c=>d+=c);
+    req.on("end",()=>{ try{ resolve(JSON.parse(d||"{}")); }catch{ resolve({}); }});
   });
 }
-const parseAmount = (v)=>{
-  const n = parseFloat(String(v ?? 1).replace(",", "."));
-  return Number.isFinite(n) ? n : 1;
-};
 
-const COOLDOWN_SEC = 16;
+const MIN_SECONDS = 16;   // durasi nonton yang kamu mau
+const REF_RATE = 0.10;    // komisi referral (ubah/0 kalau gak dipakai)
 
 module.exports = async (req, res) => {
-  const payload = req.method === "POST" ? await readBody(req) : req.query;
-  const userId = Number(payload.userId);
-  const amount = parseAmount(payload.amount); // mis: 1.25
-  if (!Number.isFinite(userId) || userId <= 0) {
-    return res.status(400).json({ error: "userId missing/invalid" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error:"method_not_allowed" });
+
+  const { userId, amount } = await readBody(req);
+  const n = parseFloat(String(amount ?? "").replace(",", "."));
+  if (!userId || !Number.isFinite(n) || n <= 0) return res.status(400).json({ error:"bad_request" });
 
   const db = getPool();
 
-  // Pastikan tabel ada (aman dipanggil berkali-kali)
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS ad_sessions (
-      user_id BIGINT NOT NULL,
-      started_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-  `);
-
-  // Pastikan row user ada
-  await db.query(`INSERT INTO users (id, balance) VALUES ($1, 0)
-                  ON CONFLICT (id) DO NOTHING`, [userId]);
-
-  // Coba buka sesi baru hanya jika cooldown lewat (atomic)
-  const { rows } = await db.query(
-    `
-    WITH last AS (
-      SELECT MAX(started_at) AS last_started
-      FROM ad_sessions
-      WHERE user_id = $1
-    ),
-    ins AS (
-      INSERT INTO ad_sessions(user_id, started_at)
-      SELECT $1, now()
-      FROM last
-      WHERE last.last_started IS NULL
-         OR now() >= last.last_started + ($2 || ' seconds')::interval
-      RETURNING 1
-    )
-    SELECT
-      (SELECT COUNT(*) FROM ins)::int AS inserted,
-      GREATEST(
-        0,
-        CEIL(
-          EXTRACT(EPOCH FROM (
-            COALESCE((SELECT last_started FROM last), now())
-            + ($2 || ' seconds')::interval - now()
-          ))
-        )
-      )::int AS cooldown_left
-    `,
-    [userId, COOLDOWN_SEC]
+  // 1) Cek detik sejak klaim terakhir (berdasarkan log)
+  const last = await db.query(
+    `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS since
+       FROM ad_reward_logs
+      WHERE user_id=$1
+      ORDER BY id DESC
+      LIMIT 1`, [userId]
   );
-
-  const inserted = rows[0]?.inserted === 1;
-  const cooldownLeft = Number(rows[0]?.cooldown_left ?? COOLDOWN_SEC);
-
-  if (inserted) {
-    // Tambah saldo
-    const up = await db.query(
-      `UPDATE users
-         SET balance = balance + $2::numeric
-       WHERE id = $1
-       RETURNING balance`,
-      [userId, amount]
-    );
-    const balance = parseFloat(String(up.rows[0].balance));
-    return res.status(200).json({ balance, cooldown: 0 });
+  const since = parseFloat(last.rows[0]?.since ?? `${MIN_SECONDS+1}`);
+  if (since < MIN_SECONDS) {
+    const left = Math.max(0, Math.ceil(MIN_SECONDS - since));
+    return res.status(429).json({ error:"cooldown", secondsLeft:left });
   }
 
-  // Masih cooldown → kirim sisa detik & saldo sekarang
-  const cur = await db.query(
-    "SELECT COALESCE(balance,0)::text AS b FROM users WHERE id=$1",
-    [userId]
-  );
-  const balance = parseFloat(cur.rows[0]?.b ?? "0");
-  return res.status(200).json({ balance, cooldown: cooldownLeft });
+  try {
+    await db.query("BEGIN");
+
+    // 2) Pastikan user ada
+    await db.query(
+      "INSERT INTO users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING",
+      [userId]
+    );
+
+    // 3) Tambah saldo
+    await db.query(
+      "UPDATE users SET balance = COALESCE(balance,0) + $1, updated_at=NOW() WHERE id=$2",
+      [n, userId]
+    );
+
+    // 4) Log reward
+    await db.query(
+      "INSERT INTO ad_reward_logs (user_id, amount) VALUES ($1,$2)",
+      [userId, n]
+    );
+
+    // 5) Komisi referral (opsional)
+    const ref = await db.query("SELECT referred_by FROM users WHERE id=$1", [userId]);
+    const refBy = ref.rows[0]?.referred_by;
+    if (refBy) {
+      const c = +(n * REF_RATE).toFixed(6);
+      await db.query("UPDATE users SET balance = COALESCE(balance,0) + $1 WHERE id=$2", [c, refBy]);
+      await db.query(
+        "INSERT INTO referral_commissions (referrer_id, referred_id, source, amount) VALUES ($1,$2,'ad_reward',$3)",
+        [refBy, userId, c]
+      );
+    }
+
+    const bal = await db.query("SELECT balance FROM users WHERE id=$1", [userId]);
+    await db.query("COMMIT");
+    res.json({ ok:true, balance: parseFloat(bal.rows[0]?.balance ?? 0) });
+  } catch (e) {
+    await db.query("ROLLBACK").catch(()=>{});
+    console.error(e);
+    res.status(500).json({ error:"server_error" });
+  }
 };
