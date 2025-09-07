@@ -90,10 +90,44 @@ const TaskPage: React.FC<TaskPageProps> = ({ tasks, userData, completeTask }) =>
     setCooldowns(prev => { const copy = [...prev]; copy[i] = ad.duration_sec || fallbackDur; return copy; });
     pendingClaim.current[i] = true;
 
-    // buka link
+    const url = ad.media_url || '';
+
+    // === MODE MONETAG SDK (bukan link) ===
+    // Gunakan media_url "monetag://<ZONE_ID>" di tabel ads (contoh: monetag://9834777)
+    if (url.startsWith('monetag://')) {
+      const zone = url.slice('monetag://'.length); // contoh: "9834777"
+      const fn =
+        (window as any)[`show_${zone}`] ||   // show_9834777 dari snippet Monetag
+        (window as any).show_9834777 ||      // fallback ke 9834777 (punyamu)
+        (window as any).showRewarded ||      // jaga-jaga
+        (window as any).playRewardedAd;
+
+      if (typeof fn !== 'function') {
+        alert('Iklan belum siap. Pastikan "Get code" Monetag sudah ditempel di index.html & Zone ID sesuai.');
+        // rollback state supaya user bisa klik lagi
+        setWatchedId(prev => { const copy = [...prev]; copy[i] = null; return copy; });
+        setCooldowns(prev => { const copy = [...prev]; copy[i] = 0; return copy; });
+        pendingClaim.current[i] = false;
+        return;
+      }
+
+      try {
+        // Tampilkan iklan rewarded; Promise resolve saat selesai.
+        // Countdown & auto-claim 16 detik tetap ditangani oleh state di atas (cooldowns & pendingClaim).
+        Promise.resolve(fn());
+      } catch {
+        // gagal memulai iklan: kembalikan state agar user bisa klik lagi
+        setWatchedId(prev => { const copy = [...prev]; copy[i] = null; return copy; });
+        setCooldowns(prev => { const copy = [...prev]; copy[i] = 0; return copy; });
+        pendingClaim.current[i] = false;
+      }
+      return;
+    }
+
+    // === MODE LINK (fallback lama – kalau ada iklan berbentuk URL) ===
     const tg = typeof window !== 'undefined' ? (window as any)?.Telegram?.WebApp : null;
-    if (tg?.openLink) tg.openLink(ad.media_url, { try_instant_view: false });
-    else window.open(ad.media_url, '_blank', 'noopener');
+    if (tg?.openLink && url) tg.openLink(url, { try_instant_view: false });
+    else if (url) window.open(url, '_blank', 'noopener');
   }
 
   // auto-claim saat cooldown slot jadi 0
