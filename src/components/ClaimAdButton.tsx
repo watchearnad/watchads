@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { showRewardThenFallback } from "../lib/adsgram";
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 
@@ -33,6 +34,10 @@ export default function ClaimAdButton({ amount = 1.25 }: { amount?: number }) {
     guard.current = true;
     setLoading(true);
     try {
+      // 1) Tampilkan iklan Adsgram (Rewarded → Interstitial fallback)
+      await showRewardThenFallback();
+
+      // 2) Setelah selesai, klaim reward ke backend kamu
       const res = await fetch(`${API_BASE}/api/reward`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
