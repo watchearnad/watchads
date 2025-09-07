@@ -6,30 +6,46 @@ module.exports = async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const uid = Number(url.searchParams.get("userId"));
     if (!Number.isFinite(uid) || uid <= 0) {
-      return res.status(400).json({ ok: false, error: "bad_userId" });
+      return res.status(200).json({ ok: false, reason: "bad_userId" });
     }
 
     const db = getPool();
+    
+    // Ensure tables exist
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS users(
+        user_id BIGINT PRIMARY KEY,
+        balance DOUBLE PRECISION DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS ad_reward_logs(
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        amount DOUBLE PRECISION NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    
     const u = await db.query(
-      "SELECT id, balance::text AS balance FROM public.users WHERE id=$1",
+      "SELECT user_id, balance FROM users WHERE user_id=$1",
       [uid]
     );
     const logs = await db.query(
-      "SELECT id, amount::text AS amount, created_at FROM public.ad_reward_logs WHERE user_id=$1 ORDER BY id DESC LIMIT 10",
+      "SELECT id, amount, created_at FROM ad_reward_logs WHERE user_id=$1 ORDER BY id DESC LIMIT 5",
       [uid]
     );
     const last = await db.query(
-      "SELECT EXTRACT(EPOCH FROM (NOW()-created_at)) AS since FROM public.ad_reward_logs WHERE user_id=$1 ORDER BY id DESC LIMIT 1",
+      "SELECT EXTRACT(EPOCH FROM (NOW()-created_at)) AS since FROM ad_reward_logs WHERE user_id=$1 ORDER BY id DESC LIMIT 1",
       [uid]
     );
 
-    res.json({
+    res.status(200).json({
       ok: true,
-      user: u.rows[0] || null,
+      user: u.rows[0] || { user_id: uid, balance: 0 },
       lastSecondsSince: last.rows[0]?.since ?? null,
       recentLogs: logs.rows
     });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    console.error("Debug error:", e);
+    res.status(200).json({ ok: false, reason: "server_error", detail: e.message });
   }
 };
