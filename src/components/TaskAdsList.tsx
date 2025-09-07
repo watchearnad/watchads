@@ -1,9 +1,43 @@
 import { useEffect, useRef, useState } from "react";
 
+/** ===== Adsgram helper (inline) ===== */
+declare global { interface Window { Adsgram?: any; Telegram?: any } }
+
+const REWARD_BLOCK_ID = import.meta.env.VITE_ADSGRAM_REWARD_BLOCK_ID as string | undefined;
+const INTER_BLOCK_ID  = import.meta.env.VITE_ADSGRAM_INTER_BLOCK_ID  as string | undefined;
+
+let _rewardCtrl: any | null = null;
+let _interCtrl:  any | null = null;
+
+function ensureAdsgramReady() {
+  if (!window?.Adsgram) return false;
+  if (!_rewardCtrl && REWARD_BLOCK_ID) _rewardCtrl = window.Adsgram.init({ blockId: REWARD_BLOCK_ID });
+  if (!_interCtrl  && INTER_BLOCK_ID)  _interCtrl  = window.Adsgram.init({ blockId: INTER_BLOCK_ID  });
+  return !!(_rewardCtrl || _interCtrl);
+}
+
+async function showAdsgram(): Promise<"rewarded"|"interstitial"|"nofill"> {
+  const ok = ensureAdsgramReady();
+  if (!ok) throw new Error("Adsgram SDK not loaded or blockId missing");
+
+  // coba Rewarded dulu
+  if (_rewardCtrl?.show) {
+    try { await _rewardCtrl.show(); return "rewarded"; }
+    catch { /* no fill / closed */ }
+  }
+  // fallback Interstitial
+  if (_interCtrl?.show) {
+    try { await _interCtrl.show(); return "interstitial"; }
+    catch { /* no fill */ }
+  }
+  return "nofill";
+}
+/** ===== End Adsgram helper ===== */
+
 type Ad = {
   id: number;
   title: string | null;
-  media_url: string;
+  media_url: string;     // tidak dipakai lagi untuk openLink
   reward: number;
   duration_sec: number;
 };
@@ -57,27 +91,45 @@ export default function TaskAdsList() {
     return () => clearInterval(t);
   }, [cooldown]);
 
-  function openAd(ad: Ad) {
-    setActiveId(ad.id);
-    const tg = getTG();
-    if (tg?.openLink) tg.openLink(ad.media_url, { try_instant_view: false });
-    else if (typeof window !== "undefined") window.open(ad.media_url, "_blank", "noopener");
-    setCooldown(ad.duration_sec || 16);
+  /** Tonton iklan via Adsgram (tidak buka Monetag lagi) */
+  async function openAd(ad: Ad) {
+    if (guard.current) return;
+    guard.current = true;
+    try {
+      setActiveId(ad.id);
+      const result = await showAdsgram();             // "rewarded" | "interstitial" | "nofill"
+      if (result === "nofill") {
+        console.log("Adsgram no fill");               // bisa tampilkan toast jika mau
+        setActiveId(null);
+        return;
+      }
+      // mulai cooldown sesuai durasi task; klaim baru aktif ketika 0
+      setCooldown(ad.duration_sec || 16);
+    } catch (e) {
+      console.log("Ad error:", e);
+      setActiveId(null);
+    } finally {
+      setTimeout(() => (guard.current = false), 200);
+    }
   }
 
+  /** Klaim reward ke backend setelah selesai nonton + cooldown habis */
   async function claim(ad: Ad) {
     if (claiming || guard.current || cooldown > 0 || activeId !== ad.id) return;
     guard.current = true;
     setClaiming(true);
     try {
+      const tg = getTG();
+      const uid = tg?.initDataUnsafe?.user?.id ?? userId;
       const res = await fetch(`${API_BASE}/api/reward`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, amount: ad.reward })
+        body: JSON.stringify({ userId: uid, amount: ad.reward })
       });
       const data = await res.json().catch(() => ({} as any));
       if (typeof data.balance === "number") setBalance(data.balance);
       if (typeof data.cooldown === "number") setCooldown(data.cooldown);
+      setActiveId(null);
     } finally {
       setClaiming(false);
       setTimeout(() => (guard.current = false), 250);
