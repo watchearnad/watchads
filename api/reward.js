@@ -28,7 +28,6 @@ function extractParams(req) {
     });
   });
 }
-
 module.exports = async (req, res) => {
   // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
